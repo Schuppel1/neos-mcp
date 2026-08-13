@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## Unreleased
+
+### Bug Fixes
+
+* `createNode` (used by `createContentNodeAction` and `createDocumentNodeAction`) now resolves property values (asset/image references, node references, booleans, dates, arrays) the same way `updateNodePropertyAction` always has, via a NodeType-based variant of `resolvePropertyValue`. Previously, creating a node with an `image`/`asset` property in the same call wrote the raw, unresolved payload, which only surfaced as an error on the next `publishChanges`. `reference`/`references` properties passed at create time are now also applied correctly, via a follow-up `SetNodeReferences` command right after the node is created.
+
 ### [2.0.6](https://github.com/UpAssist/neos-mcp/compare/2.0.5...2.0.6) (2026-07-15)
 
 

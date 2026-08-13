@@ -21,6 +21,7 @@ use Neos\ContentRepository\Core\SharedModel\Node\ReferenceName;
 use Neos\ContentRepository\Core\Feature\NodeRemoval\Command\RemoveNodeAggregate;
 use Neos\ContentRepository\Core\Feature\SubtreeTagging\Command\TagSubtree;
 use Neos\ContentRepository\Core\Feature\SubtreeTagging\Command\UntagSubtree;
+use Neos\ContentRepository\Core\NodeType\NodeType;
 use Neos\ContentRepository\Core\NodeType\NodeTypeName;
 use Neos\ContentRepository\Core\Projection\ContentGraph\ContentSubgraphInterface;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindAncestorNodesFilter;
@@ -245,15 +246,18 @@ class ContentRepositoryService
         ?string $succeedingSiblingId = null,
     ): NodeAggregateId {
         $newNodeId = NodeAggregateId::create();
+        $nodeTypeName = NodeTypeName::fromString($nodeType);
+
+        [$regularProperties, $referenceProperties] = $this->resolveCreateProperties($nodeTypeName, $properties, $workspace);
 
         $command = CreateNodeAggregateWithNode::create(
             WorkspaceName::fromString($workspace),
             $newNodeId,
-            NodeTypeName::fromString($nodeType),
+            $nodeTypeName,
             OriginDimensionSpacePoint::createWithoutDimensions(),
             NodeAggregateId::fromString($parentNodeAggregateId),
             $succeedingSiblingId !== null ? NodeAggregateId::fromString($succeedingSiblingId) : null,
-            !empty($properties) ? PropertyValuesToWrite::fromArray($properties) : null,
+            !empty($regularProperties) ? PropertyValuesToWrite::fromArray($regularProperties) : null,
         );
 
         if ($nodeName !== null) {
@@ -262,7 +266,52 @@ class ContentRepositoryService
 
         $this->getContentRepository()->handle($command);
 
+        foreach ($referenceProperties as $referenceName => $targetIds) {
+            $this->setNodeReferences($workspace, $newNodeId->value, $referenceName, $targetIds);
+        }
+
         return $newNodeId;
+    }
+
+    /**
+     * Resolve raw create-time properties against the target NodeType, and split
+     * off reference/references properties — those aren't part of
+     * PropertyValuesToWrite and must be set via a separate SetNodeReferences
+     * command once the node exists.
+     *
+     * @return array{0: array<string, mixed>, 1: array<string, string[]>}
+     */
+    private function resolveCreateProperties(NodeTypeName $nodeTypeName, array $properties, string $workspace): array
+    {
+        if (empty($properties)) {
+            return [[], []];
+        }
+
+        $nodeType = $this->getContentRepository()->getNodeTypeManager()->getNodeType($nodeTypeName);
+        if ($nodeType === null) {
+            return [$properties, []];
+        }
+
+        $regularProperties = [];
+        $referenceProperties = [];
+
+        foreach ($properties as $propertyName => $rawValue) {
+            $propertyType = $nodeType->getPropertyType($propertyName);
+
+            if ($propertyType === 'reference') {
+                $referenceProperties[$propertyName] = $rawValue !== '' && $rawValue !== null ? [$rawValue] : [];
+                continue;
+            }
+
+            if ($propertyType === 'references') {
+                $referenceProperties[$propertyName] = $this->resolveReferenceIdentifiers($rawValue, $workspace);
+                continue;
+            }
+
+            $regularProperties[$propertyName] = $this->resolvePropertyValueForNodeType($nodeType, $propertyName, $rawValue);
+        }
+
+        return [$regularProperties, $referenceProperties];
     }
 
     public function setNodeProperties(string $workspace, string $nodeAggregateId, array $properties): void
@@ -534,6 +583,16 @@ class ContentRepositoryService
             return $rawValue;
         }
 
+        return $this->resolvePropertyValueForNodeType($nodeType, $propertyName, $rawValue);
+    }
+
+    /**
+     * Same resolution as resolvePropertyValue(), but keyed off a NodeType directly
+     * instead of an existing Node — used on the create path, where the node doesn't
+     * exist yet when properties need to be resolved.
+     */
+    public function resolvePropertyValueForNodeType(NodeType $nodeType, string $propertyName, mixed $rawValue): mixed
+    {
         $propertyType = $nodeType->getPropertyType($propertyName);
 
         // Asset resolution
@@ -544,6 +603,11 @@ class ContentRepositoryService
                 if (is_array($decoded) && isset($decoded['identifier'])) {
                     $assetIdentifier = $decoded['identifier'];
                 }
+            } elseif (is_array($rawValue) && isset($rawValue['identifier'])) {
+                // Create-path properties come from a decoded JSON body, so the
+                // {"__type":"asset","identifier":"..."} object arrives as a PHP
+                // array already, not a JSON string.
+                $assetIdentifier = $rawValue['identifier'];
             }
             $asset = $this->assetRepository->findByIdentifier($assetIdentifier);
             if ($asset === null) {
@@ -592,9 +656,11 @@ class ContentRepositoryService
 
     /**
      * Resolve reference identifiers for 'reference' and 'references' property types.
-     * Returns an array of validated node aggregate IDs.
+     * Accepts a JSON array string, a comma-separated string, or an already-decoded
+     * PHP array (create-path properties come from a decoded JSON body). Returns an
+     * array of validated node aggregate IDs.
      */
-    public function resolveReferenceIdentifiers(string $rawValue, string $workspace): array
+    public function resolveReferenceIdentifiers(mixed $rawValue, string $workspace): array
     {
         if (is_string($rawValue)) {
             $decoded = json_decode($rawValue, true);
@@ -603,6 +669,8 @@ class ContentRepositoryService
             } else {
                 $identifiers = array_filter(array_map('trim', explode(',', $rawValue)));
             }
+        } elseif (is_array($rawValue)) {
+            $identifiers = $rawValue;
         } else {
             $identifiers = [];
         }
