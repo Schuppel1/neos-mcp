@@ -124,11 +124,22 @@ class ContentRepositoryService
         return $this->contentRepositoryRegistry->get($this->getContentRepositoryId());
     }
 
+    /**
+     * The site's configured default dimension space point (e.g. {language: de}).
+     * Sites without content dimensions resolve this to the dimensionless point,
+     * so this is safe to use in place of DimensionSpacePoint::createWithoutDimensions()
+     * everywhere a node's actual dimension variant is needed.
+     */
+    public function getDefaultDimensionSpacePoint(): DimensionSpacePoint
+    {
+        return $this->getDefaultSite()->getConfiguration()->defaultDimensionSpacePoint;
+    }
+
     public function getSubgraph(string $workspace = 'live'): ContentSubgraphInterface
     {
         return $this->getContentRepository()->getContentSubgraph(
             WorkspaceName::fromString($workspace),
-            DimensionSpacePoint::createWithoutDimensions()
+            $this->getDefaultDimensionSpacePoint()
         );
     }
 
@@ -137,7 +148,7 @@ class ContentRepositoryService
         return $this->siteNodeUtility->findSiteNodeBySite(
             $this->getDefaultSite(),
             WorkspaceName::fromString($workspace),
-            DimensionSpacePoint::createWithoutDimensions()
+            $this->getDefaultDimensionSpacePoint()
         );
     }
 
@@ -254,7 +265,7 @@ class ContentRepositoryService
             WorkspaceName::fromString($workspace),
             $newNodeId,
             $nodeTypeName,
-            OriginDimensionSpacePoint::createWithoutDimensions(),
+            OriginDimensionSpacePoint::fromDimensionSpacePoint($this->getDefaultDimensionSpacePoint()),
             NodeAggregateId::fromString($parentNodeAggregateId),
             $succeedingSiblingId !== null ? NodeAggregateId::fromString($succeedingSiblingId) : null,
             !empty($regularProperties) ? PropertyValuesToWrite::fromArray($regularProperties) : null,
@@ -366,7 +377,7 @@ class ContentRepositoryService
     ): void {
         $command = MoveNodeAggregate::create(
             WorkspaceName::fromString($workspace),
-            DimensionSpacePoint::createWithoutDimensions(),
+            $this->getDefaultDimensionSpacePoint(),
             NodeAggregateId::fromString($nodeAggregateId),
             RelationDistributionStrategy::STRATEGY_GATHER_ALL,
             $newParentId !== null ? NodeAggregateId::fromString($newParentId) : null,
@@ -382,7 +393,7 @@ class ContentRepositoryService
         $command = RemoveNodeAggregate::create(
             WorkspaceName::fromString($workspace),
             NodeAggregateId::fromString($nodeAggregateId),
-            DimensionSpacePoint::createWithoutDimensions(),
+            $this->getDefaultDimensionSpacePoint(),
             NodeVariantSelectionStrategy::STRATEGY_ALL_SPECIALIZATIONS,
         );
 
@@ -393,7 +404,7 @@ class ContentRepositoryService
     {
         $wsName = WorkspaceName::fromString($workspace);
         $nodeId = NodeAggregateId::fromString($nodeAggregateId);
-        $dsp = DimensionSpacePoint::createWithoutDimensions();
+        $dsp = $this->getDefaultDimensionSpacePoint();
         $strategy = NodeVariantSelectionStrategy::STRATEGY_ALL_SPECIALIZATIONS;
 
         if ($hidden) {
